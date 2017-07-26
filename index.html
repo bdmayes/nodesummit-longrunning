@@ -1,0 +1,458 @@
+<!doctype html>
+<html>
+	<head>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+
+		<title>Long-running Background Proccesses in Node</title>
+
+		<link rel="stylesheet" href="css/reveal.css">
+		<link rel="stylesheet" href="css/theme/spanning.css">
+
+		<!-- Theme used for syntax highlighting of code -->
+		<link rel="stylesheet" href="lib/css/zenburn.css">
+
+		<!-- Printing and PDF exports -->
+		<script>
+			var link = document.createElement( 'link' );
+			link.rel = 'stylesheet';
+			link.type = 'text/css';
+			link.href = window.location.search.match( /print-pdf/gi ) ? 'css/print/pdf.css' : 'css/print/paper.css';
+			document.getElementsByTagName( 'head' )[0].appendChild( link );
+		</script>
+	</head>
+	<body>
+		<div class="reveal">
+			<div class="slides">
+				<section data-background="#30659b">
+					<h1>Long-running Background Processes in Node</h1>
+					<br>
+					<p>Brandon Mayes</p>
+					<p>Node Summit 2017</p>
+
+					<aside class="notes">
+						- Going to move fast due to time limit<br>
+						- Link to slides posted at end<br>
+          </aside>
+				</section>
+
+				<section>
+					<img src="images/Spanning-logo-white.png" class="no-style">
+				</section>
+
+				<section>
+					<h2>Spanning?</h2>
+					<p>
+						SaaS data protection == Backup and recovery for cloud applications
+					</p>
+				</section>
+
+				<section>
+					<h2>Apps we support</h2>
+					<ul>
+						<li>G-Suite</li>
+						<li><span class="fragment highlight-blue visible" data-fragment-index="0">Salesforce</span></li>
+						<li>Office 365</li>
+					</ul>
+
+					<aside class="notes">
+						- User error, bad sync, or malicious deletion...but you actually do need to back these things up.
+          </aside>
+				</section>
+
+				<section>
+					<h2>Some long tasks we perform</h2>
+					<ul>
+						<li>Backup</li>
+						<li>Restore</li>
+						<li>Cross-org "restore"</li>
+						<li>Metadata Comparison</li>
+						<li>Export</li>
+					</ul>
+
+					<aside class="notes">
+						- These are for SF product.<br>
+						- Product obviously does more than this but these are the big ones.
+          </aside>
+				</section>
+
+				<section>
+					<h2>What's this talk all about?</h2>
+					<ul>
+						<li class="fragment fade-up" data-fragment-index="0">Architectural dilemmas</li>
+						<li class="fragment fade-up" data-fragment-index="1">Challenges coming from a Java background</li>
+						<li class="fragment fade-up" data-fragment-index="2">Building processes for the long haul</li>
+						<li class="fragment fade-up" data-fragment-index="3">Lessons learned</li>
+						<li class="fragment fade-up" data-fragment-index="4">Areas for improvement</li>
+					</ul>
+				</section>
+
+				<section>
+					<h2>When things were easy</h2>
+					<img src="images/request1.png" class="no-style">
+				</section>
+
+				<section>
+					<h2>Then something happened</h2>
+					<img src="images/request2.png" class="no-style">
+				</section>
+
+				<section>
+					<h2>Dealing with async response</h2>
+					<ul>
+						<li class="fragment fade-up" data-fragment-index="1">Respond in a callback</li>
+						<li class="fragment fade-up" data-fragment-index="2">Respond before callback</li>
+						<li class="fragment fade-up" data-fragment-index="3">A...third thing</li>
+					</ul>
+				</section>
+
+				<section>
+					<h2>Respond in callback</h2>
+					<pre>
+						<code data-trim data-noescape>
+expressApp.get('/foo/do-stuff', (req, res) => {
+  stuff();
+
+  longFunction((err, data) => {
+    res.send(data);
+  });
+});
+						</code>
+					</pre>
+
+					<aside class="notes">
+						Not blocking everyone else but takes too long and isn't a good experience for user.
+					</aside>
+				</section>
+
+				<section>
+					<h2>Respond before callback</h2>
+					<pre>
+						<code data-trim data-noescape>
+expressApp.get('/foo/do-stuff', (req, res) => {
+  stuff();
+
+  longFunction((err, data) => {
+    // How do I notify the user of anything here?
+  });
+
+  // We're sending back a string instead of the actual data
+  res.send('done');
+});
+						</code>
+					</pre>
+
+					<aside class="notes">
+						Not necessarily blocking, user isn't waiting, but they have no idea whether the long task fails or not.
+					</aside>
+				</section>
+
+				<section>
+					<h2>Worker "thread" pattern</h2>
+					<img src="images/request3.png" class="no-style">
+
+					<aside class="notes">
+						- Any sort of message bus (SQS, Redis, RabbitMQ, etc.)<br>
+						- Queues can be monitored and observed<br>
+						- Could use websockets if you wish (we don't have the need)<br>
+						- Be careful not to manage state in web tier (such as in-memory -- rely on Redis or something instead, making web tier stateless)
+					</aside>
+				</section>
+
+				<section>
+					<h2>Send long task to a worker</h2>
+					<pre>
+						<code data-trim data-noescape>
+expressApp.get('/foo/do-stuff', (req, res) => {
+  stuff();
+
+  const uniqueId = queueLongFunction(req);
+  res.send(uniqueId);
+});
+						</code>
+					</pre>
+				</section>
+
+				<section>
+					<h2>Use this pattern when a function...</h2>
+					<ul>
+						<li>Blocks the event loop</li>
+						<li>Takes a really long time</li>
+					</ul>
+				</section>
+
+				<section>
+					<h2>Scalable architecture</h2>
+					<img src="images/arch2.png" class="no-style" height="700px">
+
+					<aside class="notes">
+						- Each tier can scale out in a horizontal fashion independently of others
+					</aside>
+				</section>
+
+				<section>
+					<h2>Tips for robust workers</h2>
+					<ul>
+						<li class="fragment fade-up" data-fragment-index="0">Retry logic</li>
+						<li class="fragment fade-up" data-fragment-index="1">Catch all unhandled exceptions/rejections</li>
+						<li class="fragment fade-up" data-fragment-index="2">Resumability
+							<ul>
+								<li>Leave breadcrumbs</li>
+								<li>Make tasks <i>resumable</i>, not just restartable</li>
+							</ul>
+						</li>
+					</ul>
+
+					<aside class="notes">
+						- To end-user it appears to be running continously<br>
+						- In reality: could be bouncing around between workers<br>
+						- Give illusion of running all on a single process
+					</aside>
+				</section>
+
+				<section>
+					<h2>Challenges coming from Java</h2>
+					<ul>
+						<li class="fragment fade-up" data-fragment-index="0">Keep wanting to borrow patterns
+						  <ul>
+								<li>No threads on the server!</li>
+							</ul>
+						</li>
+						<li class="fragment fade-up" data-fragment-index="1">Pace that libraries change is FAST
+							<ul>
+								<li>npm shrinkwrap to avoid constantly breaking builds</li>
+								<li>Carve out time to upgrade and test changes more often.</li>
+							</ul>
+						</li>
+						<li class="fragment fade-up" data-fragment-index="2">Node is async, but we need to maintain order
+							<ul>
+								<li>We use Bluebird (for now)</li>
+								<li>Wrote a utility for promise-returning while loops/retry logic</li>
+							</ul>
+						</li>
+					</ul>
+
+					<aside class="notes">
+						Try npm install bower and you'll be told to use yarn or webpack.
+					</aside>
+				</section>
+
+				<section>
+					<h2>Monitoring all the things</h2>
+					<ul>
+						<li>Internal monitoring application</li>
+						<li>Slack integration coming from Nagios
+							<ul>
+								<li>Parse logs</li>
+								<li>CloudWatch</li>
+								<li>InfluxDB</li>
+							</ul>
+						</li>
+					</ul>
+
+					<aside class="notes">
+
+          </aside>
+				</section>
+
+				<section>
+					<h2>Monitoring progress</h2>
+					<img src="images/admin-progress.png" class="no-style">
+					<aside class="notes">
+            - Obviously this is internal only and doesn't have to be pretty...just functional.
+					</aside>
+				</section>
+
+				<section>
+					<h2>Slack notifications</h2>
+					<img src="images/slack-zombies.png" class="no-style">
+					<aside class="notes">
+
+					</aside>
+				</section>
+
+				<section>
+					<h2>If all else fails <strike>use fire</strike> debug</h2>
+					<ul>
+						<li class="fragment fade-up" data-fragment-index="0">Create a debug queue
+							<ul>
+								<li class="fragment fade-up" data-fragment-index="1">Route to debug queue via internal tool</li>
+								<li class="fragment fade-up" data-fragment-index="2">Higher logging level</li>
+							  <li class="fragment fade-up" data-fragment-index="3">Generate a core dump (for mdb)
+									<ul>
+										<li>node --abort-on-uncaught-exception</li>
+									</ul>
+								</li>
+							</ul>
+						</li>
+					</ul>
+				</section>
+
+				<section>
+					<h2>Setting up mdb</h2>
+					<ul>
+						<li>install VirtualBox</li>
+						<li>npm install -g autopsy</li>
+						<li>autopsy setup (if possible, increase RAM after this)</li>
+						<li>autopsy start</li>
+						<li>autopsy node core</li>
+						<li>autopsy stop</li>
+					</ul>
+
+					<aside class="notes">
+						- Default RAM is 2GB, I used 4GB<br>
+						- copy (scp) mdb_v8_amd64.so, node, and core to VM<br>
+						- mdb node core (run in VM)<br>
+					</aside>
+				</section>
+
+				<section>
+					<h2>MDB debugging</h2>
+          <p>A brief introduction using animated gifs...</p>
+					<aside class="notes">
+            - Actual core file we had in production
+					</aside>
+				</section>
+
+				<section>
+					<h2>Starting it up</h2>
+					<img src="images/autopsy1.gif" class="no-style" style="width: 800px">
+				</section>
+
+				<section>
+					<h2>Inspecting the call stack</h2>
+					<img src="images/autopsy2.gif" class="no-style" style="width: 800px">
+				</section>
+
+				<section>
+					<h2>Inspecting variables</h2>
+					<img src="images/autopsy3.gif" class="no-style" style="width: 800px">
+				</section>
+
+				<section>
+					<h2>What happened?</h2>
+					<ul>
+						<li class="fragment fade-up" data-fragment-index="0">Making request to Salesforce Bulk API</li>
+						<li class="fragment fade-up" data-fragment-index="1">Result is a CSV</li>
+						<li class="fragment fade-up" data-fragment-index="2">Underlying library had an open github issue:
+							<ul>
+								<li>Using synchronous functions</li>
+								<li>Stored entire contents of CSV in memory</li>
+							</ul>
+						</li>
+						<li class="fragment fade-up" data-fragment-index="3">Solution: Wait for proper stream fix and upgrade lib</li>
+						<li class="fragment fade-up" data-fragment-index="4">Workaround: Make smaller requests</li>
+					</ul>
+
+					<aside class="notes">
+            - Bulk API is async. Make request, poll status, download
+					</aside>
+				</section>
+
+				<section>
+					<h2>Other useful commands</h2>
+					<ul>
+						<li>::jsfunctions</li>
+						<li>::jsfindobjects</li>
+						<li>many more...</li>
+					</ul>
+
+					<aside class="notes">
+            - jsfunctions and jsfindobjects can take a long time
+					</aside>
+				</section>
+
+				<section>
+					<h2>When you're done</h2>
+					<img src="images/mic-drop.webp" class="no-style" style="width: 800px">
+				</section>
+
+				<section>
+					<h2>So why Node and not Java?</h2>
+					<ul>
+						<li class="fragment fade-up" data-fragment-index="0">Our workload is extremely I/O intensive</li>
+						<li class="fragment fade-up" data-fragment-index="1">Easy concurrency management without threads</li>
+						<li class="fragment fade-up" data-fragment-index="2">More rapid code changes</li>
+						<li class="fragment fade-up" data-fragment-index="3">Easily debug without recompiling</li>
+					</ul>
+
+					<aside class="notes">
+            - Not good for every use-case (especially high compute workloads with little I/O)
+					</aside>
+				</section>
+
+				<section>
+					<h2>Lessons learned</h2>
+					<ul>
+						<li class="fragment fade-up" data-fragment-index="0">Delegate long-running tasks to workers</li>
+						<li class="fragment fade-up" data-fragment-index="1">Use message bus for interprocess communication</li>
+						<li class="fragment fade-up" data-fragment-index="2">Fail gracefully (fault tolerance, resumability, etc.)</li>
+						<li class="fragment fade-up" data-fragment-index="3">Carve out time to update and test often</li>
+						<li class="fragment fade-up" data-fragment-index="4">Monitor, find ways to debug, and automatically recover</li>
+						<li class="fragment fade-up" data-fragment-index="5">Be paranoid</li>
+					</ul>
+				</section>
+
+				<section>
+          <h2>The struggle is real</h2>
+					<ul>
+						<li class="fragment fade-up" data-fragment-index="0">How to generate a thread/stack dump?
+							<ul>
+								<li><a href="https://www.npmjs.com/package/core-dump">https://www.npmjs.com/package/core-dump</a></li>
+								<li>Attach to PID via gdb then generate-core</li>
+							</ul>
+						</li>
+						<li class="fragment fade-up" data-fragment-index="1">Can't always test with "live" data or large enough data
+							<ul>
+								<li>Standup DB snapshot for testing, explain plans, etc.</li>
+								<li>Log too much at first and/or save that for debug worker</li>
+							</ul>
+						</li>
+					</ul>
+
+					<aside class="notes">
+						- Can't send SIQUIT (kill -3) signal to get heap dump<br>
+						- Always looking for better ways to stress test.
+					</aside>
+				</section>
+
+				<section>
+					<h2>Questions?</h2>
+					<img src="images/shruggy-cloudy.png" class="no-style" style="width: 400px; height: 400px">
+				</section>
+
+				<section>
+					<h2>Thank you!</h2>
+					<img src="images/fonzie-cloudy.png" class="no-style" style="width: 400px; height: 400px">
+					<br>
+					<ul>
+						<li>email: brandon.mayes@spanning.com</li>
+						<li>twitter: <a href="https://twitter.com/twofifty6">@twofifty6</a></li>
+						<li>slides: <a href="https://bdmayes.github.io/nodesummit-longrunning/">bdmayes.github.io/nodesummit-longrunning/</a></li>
+					</ul>
+				</section>
+			</div>
+		</div>
+
+		<script src="lib/js/head.min.js"></script>
+		<script src="js/reveal.js"></script>
+
+		<script>
+			// More info https://github.com/hakimel/reveal.js#configuration
+			Reveal.initialize({
+				controls: false,
+				history: true,
+				showNotes: false,
+				progress: false,
+
+				// More info https://github.com/hakimel/reveal.js#dependencies
+				dependencies: [
+					{ src: 'plugin/markdown/marked.js' },
+					{ src: 'plugin/markdown/markdown.js' },
+					{ src: 'plugin/notes/notes.js', async: true },
+					{ src: 'plugin/highlight/highlight.js', async: true, callback: function() { hljs.initHighlightingOnLoad(); } }
+				]
+			});
+		</script>
+	</body>
+</html>
